@@ -11,6 +11,10 @@ inputs:
   github-token:
     description: 'GitHub token for authentication'
     required: true
+  release-branch:
+    description: 'Branch to release from (default: main)'
+    required: false
+    default: "main"
   mark-as-latest:
     description: 'Mark the generated GitHub release as the latest (default: false)'
     required: false
@@ -19,10 +23,10 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Checkout main
+    - name: Checkout release branch
       uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
       with:
-        ref: main
+        ref: ${{ inputs.release-branch }}
 
     - name: Update tinfoil-config.yml
       shell: bash
@@ -48,22 +52,22 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
 
-    - name: Push tinfoil tag
+    - name: Push version tag
       if: steps.create-pr.outputs.pull-request-number
       shell: bash
       run: |
-        git fetch origin main
-        git tag "tinfoil-${{ inputs.version }}" origin/main
-        git push origin "tinfoil-${{ inputs.version }}"
+        git fetch origin ${{ inputs.release-branch }}
+        git tag "${{ inputs.version }}" origin/${{ inputs.release-branch }}
+        git push origin "${{ inputs.version }}"
 
-    - name: Checkout tinfoil tag
+    - name: Checkout version tag
       uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
       with:
-        ref: tinfoil-${{ inputs.version }}
+        ref: ${{ inputs.version }}
 
     - uses: tinfoilsh/measure-image-action@43349abfd0ec3c99c088b21db36ad0066f27f70a  # v0.8.1
       with:
         config-file: ${{ github.workspace }}/tinfoil-config.yml
         github-token: ${{ inputs.github-token }}
-        release-ref: tinfoil-${{ inputs.version }}
+        release-ref: ${{ inputs.version }}
         mark-as-latest: ${{ inputs.mark-as-latest }}
