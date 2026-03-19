@@ -30,30 +30,35 @@ runs:
 
     - name: Validate inputs
       shell: bash
+      env:
+        DIGEST: ${{ inputs.digest }}
       run: |
-        if [[ ! "${{ inputs.digest }}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-          echo "::error::Invalid digest format: ${{ inputs.digest }}. Expected format: sha256:<64 hex characters>"
+        if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          echo "::error::Invalid digest format: $DIGEST. Expected format: sha256:<64 hex characters>"
           exit 1
         fi
 
     - name: Determine which steps are needed
       id: check
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        DIGEST: ${{ inputs.digest }}
+        RELEASE_BRANCH: ${{ inputs.release-branch }}
       run: |
         IMAGE="ghcr.io/${{ github.repository }}"
-        DIGEST="${{ inputs.digest }}"
         NEEDS_CONFIG_UPDATE=true
         NEEDS_TAG=true
 
         # If tag exists with correct digest, everything is already done -- just re-run measurement
-        if git ls-remote --tags origin "${{ inputs.version }}" | grep -q .; then
-          git fetch origin "refs/tags/${{ inputs.version }}:refs/tags/${{ inputs.version }}"
-          if git show "${{ inputs.version }}":tinfoil-config.yml 2>/dev/null | grep -q "image: \"${IMAGE}@${DIGEST}\""; then
-            echo "::notice::Tag ${{ inputs.version }} already exists with correct digest — skipping to measurement"
+        if git ls-remote --tags origin "$VERSION" | grep -q .; then
+          git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+          if git show "${VERSION}:tinfoil-config.yml" 2>/dev/null | grep -q "image: \"${IMAGE}@${DIGEST}\""; then
+            echo "::notice::Tag ${VERSION} already exists with correct digest — skipping to measurement"
             NEEDS_CONFIG_UPDATE=false
             NEEDS_TAG=false
           else
-            echo "::error::Tag ${{ inputs.version }} already exists but has a different digest"
+            echo "::error::Tag ${VERSION} already exists but has a different digest"
             exit 1
           fi
         # If config already has the correct digest, PR was merged but tag wasn't pushed
@@ -61,7 +66,7 @@ runs:
           echo "::notice::tinfoil-config.yml already has correct digest — skipping to tag push"
           NEEDS_CONFIG_UPDATE=false
         elif [ ! -f tinfoil-config.yml ]; then
-          echo "::error::tinfoil-config.yml not found on branch ${{ inputs.release-branch }}"
+          echo "::error::tinfoil-config.yml not found on branch ${RELEASE_BRANCH}"
           exit 1
         fi
 
@@ -71,10 +76,12 @@ runs:
     - name: Update tinfoil-config.yml
       if: steps.check.outputs.needs_config_update == 'true'
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        DIGEST: ${{ inputs.digest }}
       run: |
         IMAGE="ghcr.io/${{ github.repository }}"
-        DIGEST="${{ inputs.digest }}"
-        sed -i "s|image: \"${IMAGE}[:@].*\".*|image: \"${IMAGE}@${DIGEST}\" # ${{ inputs.version }}|" tinfoil-config.yml
+        sed -i "s|image: \"${IMAGE}[:@].*\".*|image: \"${IMAGE}@${DIGEST}\" # ${VERSION}|" tinfoil-config.yml
         if ! git diff --quiet tinfoil-config.yml; then
           echo "tinfoil-config.yml updated successfully"
         else
@@ -96,17 +103,21 @@ runs:
     - name: Merge Pull Request
       if: steps.check.outputs.needs_config_update == 'true' && steps.create-pr.outputs.pull-request-number
       shell: bash
-      run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --rebase --admin --delete-branch
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+      run: gh pr merge "$PR_NUMBER" --rebase --admin --delete-branch
 
     - name: Push version tag
       if: steps.check.outputs.needs_tag == 'true'
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        RELEASE_BRANCH: ${{ inputs.release-branch }}
       run: |
-        git fetch origin ${{ inputs.release-branch }}
-        git tag "${{ inputs.version }}" origin/${{ inputs.release-branch }}
-        git push origin "${{ inputs.version }}"
+        git fetch origin "$RELEASE_BRANCH"
+        git tag "$VERSION" "origin/$RELEASE_BRANCH"
+        git push origin "$VERSION"
 
     - name: Checkout version tag
       uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
