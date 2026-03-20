@@ -1,5 +1,5 @@
 name: 'Tinfoil Container Release'
-description: 'Updates tinfoil-config, creates release tag, and runs measurement'
+description: 'Updates tinfoil-config, creates release tag'
 
 inputs:
   digest:
@@ -11,22 +11,17 @@ inputs:
   github-token:
     description: 'GitHub token for authentication'
     required: true
-  release-branch:
-    description: 'Branch to release from (default: main)'
-    required: false
-    default: "main"
-  mark-as-latest:
-    description: 'Mark the generated GitHub release as the latest (default: false)'
-    required: false
-    default: "false"
+  base-branch:
+    description: 'Branch to target for the PR and version tag'
+    required: true
 
 runs:
   using: 'composite'
   steps:
-    - name: Checkout release branch
+    - name: Checkout base branch
       uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
       with:
-        ref: ${{ inputs.release-branch }}
+        ref: ${{ inputs.base-branch }}
 
     - name: Validate inputs
       shell: bash
@@ -44,17 +39,16 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
         DIGEST: ${{ inputs.digest }}
-        RELEASE_BRANCH: ${{ inputs.release-branch }}
       run: |
         IMAGE="ghcr.io/${{ github.repository }}"
         NEEDS_CONFIG_UPDATE=true
         NEEDS_TAG=true
 
-        # If tag exists with correct digest, everything is already done -- just re-run measurement
-        if git ls-remote --tags origin "$VERSION" | grep -q .; then
+        # If tag exists with correct digest, nothing to do
+        if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q .; then
           git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
           if git show "${VERSION}:tinfoil-config.yml" 2>/dev/null | grep -q "image: \"${IMAGE}@${DIGEST}\""; then
-            echo "::notice::Tag ${VERSION} already exists with correct digest — skipping to measurement"
+            echo "::notice::Tag ${VERSION} already exists with correct digest — nothing to do"
             NEEDS_CONFIG_UPDATE=false
             NEEDS_TAG=false
           else
@@ -66,7 +60,7 @@ runs:
           echo "::notice::tinfoil-config.yml already has correct digest — skipping to tag push"
           NEEDS_CONFIG_UPDATE=false
         elif [ ! -f tinfoil-config.yml ]; then
-          echo "::error::tinfoil-config.yml not found on branch ${RELEASE_BRANCH}"
+          echo "::error::tinfoil-config.yml not found"
           exit 1
         fi
 
@@ -94,6 +88,7 @@ runs:
       if: steps.check.outputs.needs_config_update == 'true'
       uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # 7.0.11
       with:
+        base: ${{ inputs.base-branch }}
         branch: update-config/${{ inputs.version }}
         commit-message: "chore: update container image to ${{ inputs.version }}"
         title: "chore: update container image to ${{ inputs.version }}"
@@ -113,20 +108,8 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-        RELEASE_BRANCH: ${{ inputs.release-branch }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
       run: |
-        git fetch origin "$RELEASE_BRANCH"
-        git tag "$VERSION" "origin/$RELEASE_BRANCH"
+        git fetch origin "$BASE_BRANCH"
+        git tag "$VERSION" "origin/$BASE_BRANCH"
         git push origin "$VERSION"
-
-    - name: Checkout version tag
-      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-      with:
-        ref: ${{ inputs.version }}
-
-    - uses: tinfoilsh/measure-image-action@43349abfd0ec3c99c088b21db36ad0066f27f70a  # v0.8.1
-      with:
-        config-file: ${{ github.workspace }}/tinfoil-config.yml
-        github-token: ${{ inputs.github-token }}
-        release-ref: ${{ inputs.version }}
-        mark-as-latest: ${{ inputs.mark-as-latest }}
