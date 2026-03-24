@@ -1,2 +1,2 @@
-# container-release-action
-Github Action to create new container releases for Tinfoil Containers
+# update-container-action
+Github Action to update container digests and create new tags for Tinfoil Containers repos.
