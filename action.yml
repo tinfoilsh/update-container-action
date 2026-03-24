@@ -33,7 +33,7 @@ runs:
           exit 1
         fi
 
-    - name: Determine which steps are needed
+    - name: Determine which steps are needed for idempotence
       id: check
       shell: bash
       env:
