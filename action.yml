@@ -2,6 +2,9 @@ name: 'Tinfoil Container Release'
 description: 'Updates tinfoil-config, creates release tag'
 
 inputs:
+  image:
+    description: 'Repository name of the image to update (without the tag or hash)'
+    required: true
   digest:
     description: 'Container image digest from the container build'
     required: true
@@ -39,8 +42,8 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
         DIGEST: ${{ inputs.digest }}
+        IMAGE: ${{ inputs.image }}
       run: |
-        IMAGE="ghcr.io/${{ github.repository }}"
         NEEDS_CONFIG_UPDATE=true
         NEEDS_TAG=true
 
@@ -73,8 +76,8 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
         DIGEST: ${{ inputs.digest }}
+        IMAGE: ${{ inputs.image }}
       run: |
-        IMAGE="ghcr.io/${{ github.repository }}"
         sed -i "s|image: \"${IMAGE}[:@].*\".*|image: \"${IMAGE}@${DIGEST}\" # ${VERSION}|" tinfoil-config.yml
         if ! git diff --quiet tinfoil-config.yml; then
           echo "tinfoil-config.yml updated successfully"
