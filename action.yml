@@ -32,44 +32,27 @@ runs:
         IMAGES: ${{ inputs.image }}
         DIGESTS: ${{ inputs.digest }}
       run: |
-        # Read inputs into arrays
-        mapfile -t IMAGE_ARR <<< "$IMAGES"
-        mapfile -t DIGEST_ARR <<< "$DIGESTS"
+        mapfile -t IMAGE_ARR < <(printf '%s' "$IMAGES" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
+        mapfile -t DIGEST_ARR < <(printf '%s' "$DIGESTS" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
 
-        # Filter out empty lines
-        IMAGE_ARR=("${IMAGE_ARR[@]//[$'\r']/}")
-        DIGEST_ARR=("${DIGEST_ARR[@]//[$'\r']/}")
-
-        # Count non-empty entries
-        IMG_COUNT=0
-        for img in "${IMAGE_ARR[@]}"; do
-          [[ -n "${img// /}" ]] && ((IMG_COUNT++))
-        done
-        DIG_COUNT=0
-        for dig in "${DIGEST_ARR[@]}"; do
-          [[ -n "${dig// /}" ]] && ((DIG_COUNT++))
-        done
-
-        if [[ "$IMG_COUNT" -ne "$DIG_COUNT" ]]; then
-          echo "::error::Mismatch: got $IMG_COUNT image(s) but $DIG_COUNT digest(s)"
+        if [[ "${#IMAGE_ARR[@]}" -ne "${#DIGEST_ARR[@]}" ]]; then
+          echo "::error::Mismatch: got ${#IMAGE_ARR[@]} image(s) but ${#DIGEST_ARR[@]} digest(s)"
           exit 1
         fi
 
-        if [[ "$IMG_COUNT" -eq 0 ]]; then
+        if [[ "${#IMAGE_ARR[@]}" -eq 0 ]]; then
           echo "::error::No images provided"
           exit 1
         fi
 
         for dig in "${DIGEST_ARR[@]}"; do
-          dig="${dig// /}"
-          [[ -z "$dig" ]] && continue
           if [[ ! "$dig" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo "::error::Invalid digest format: $dig. Expected format: sha256:<64 hex characters>"
             exit 1
           fi
         done
 
-        echo "Validated $IMG_COUNT image/digest pair(s)"
+        echo "Validated ${#IMAGE_ARR[@]} image/digest pair(s)"
 
     - name: Determine which steps are needed for idempotence
       id: check
@@ -79,10 +62,8 @@ runs:
         IMAGES: ${{ inputs.image }}
         DIGESTS: ${{ inputs.digest }}
       run: |
-        mapfile -t IMAGE_ARR <<< "$IMAGES"
-        mapfile -t DIGEST_ARR <<< "$DIGESTS"
-        IMAGE_ARR=("${IMAGE_ARR[@]//[$'\r']/}")
-        DIGEST_ARR=("${DIGEST_ARR[@]//[$'\r']/}")
+        mapfile -t IMAGE_ARR < <(printf '%s' "$IMAGES" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
+        mapfile -t DIGEST_ARR < <(printf '%s' "$DIGESTS" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
 
         NEEDS_CONFIG_UPDATE=true
         NEEDS_TAG=true
@@ -98,10 +79,7 @@ runs:
 
           ALL_MATCH=true
           for i in "${!IMAGE_ARR[@]}"; do
-            img="${IMAGE_ARR[$i]// /}"
-            dig="${DIGEST_ARR[$i]// /}"
-            [[ -z "$img" ]] && continue
-            if ! echo "$TAG_CONFIG" | grep -q "image: \"${img}@${dig}\""; then
+            if ! echo "$TAG_CONFIG" | grep -q "image: \"${IMAGE_ARR[$i]}@${DIGEST_ARR[$i]}\""; then
               ALL_MATCH=false
               break
             fi
@@ -119,10 +97,7 @@ runs:
           # Check if config already has all correct digests (PR merged but tag not pushed)
           ALL_IN_CONFIG=true
           for i in "${!IMAGE_ARR[@]}"; do
-            img="${IMAGE_ARR[$i]// /}"
-            dig="${DIGEST_ARR[$i]// /}"
-            [[ -z "$img" ]] && continue
-            if ! grep -q "image: \"${img}@${dig}\"" tinfoil-config.yml; then
+            if ! grep -q "image: \"${IMAGE_ARR[$i]}@${DIGEST_ARR[$i]}\"" tinfoil-config.yml; then
               ALL_IN_CONFIG=false
               break
             fi
@@ -145,16 +120,11 @@ runs:
         IMAGES: ${{ inputs.image }}
         DIGESTS: ${{ inputs.digest }}
       run: |
-        mapfile -t IMAGE_ARR <<< "$IMAGES"
-        mapfile -t DIGEST_ARR <<< "$DIGESTS"
-        IMAGE_ARR=("${IMAGE_ARR[@]//[$'\r']/}")
-        DIGEST_ARR=("${DIGEST_ARR[@]//[$'\r']/}")
+        mapfile -t IMAGE_ARR < <(printf '%s' "$IMAGES" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
+        mapfile -t DIGEST_ARR < <(printf '%s' "$DIGESTS" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
 
         for i in "${!IMAGE_ARR[@]}"; do
-          img="${IMAGE_ARR[$i]// /}"
-          dig="${DIGEST_ARR[$i]// /}"
-          [[ -z "$img" ]] && continue
-          sed -i "s|image: \"${img}[:@].*\".*|image: \"${img}@${dig}\" # ${VERSION}|" tinfoil-config.yml
+          sed -i "s|image: \"${IMAGE_ARR[$i]}[:@].*\".*|image: \"${IMAGE_ARR[$i]}@${DIGEST_ARR[$i]}\" # ${VERSION}|" tinfoil-config.yml
         done
 
         if ! git diff --quiet tinfoil-config.yml; then
