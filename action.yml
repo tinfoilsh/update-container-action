@@ -1,70 +1,137 @@
-name: 'Tinfoil Container Release'
-description: 'Updates tinfoil-config, creates release tag'
+name: "Tinfoil Container Release"
+description: "Updates tinfoil-config, creates release tag. Supports single or multiple container images."
 
 inputs:
   image:
-    description: 'Repository name of the image to update (without the tag or hash)'
+    description: "Repository name(s) of the image(s) to update (without the tag or hash). For multiple images, use newline-separated values."
     required: true
   digest:
-    description: 'Container image digest from the container build'
+    description: "Container image digest(s) from the container build. For multiple images, use newline-separated values (must match image order)."
     required: true
   version:
-    description: 'Version tag (e.g., v0.0.6)'
+    description: "Version tag (e.g., v0.0.6)"
     required: true
   github-token:
-    description: 'GitHub token for authentication'
+    description: "GitHub token for authentication"
     required: true
   base-branch:
-    description: 'Branch to target for the PR and version tag'
+    description: "Branch to target for the PR and version tag"
     required: true
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
     - name: Checkout base branch
-      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         ref: ${{ inputs.base-branch }}
 
     - name: Validate inputs
       shell: bash
       env:
-        DIGEST: ${{ inputs.digest }}
+        IMAGES: ${{ inputs.image }}
+        DIGESTS: ${{ inputs.digest }}
       run: |
-        if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-          echo "::error::Invalid digest format: $DIGEST. Expected format: sha256:<64 hex characters>"
+        # Read inputs into arrays
+        mapfile -t IMAGE_ARR <<< "$IMAGES"
+        mapfile -t DIGEST_ARR <<< "$DIGESTS"
+
+        # Filter out empty lines
+        IMAGE_ARR=("${IMAGE_ARR[@]//[$'\r']/}")
+        DIGEST_ARR=("${DIGEST_ARR[@]//[$'\r']/}")
+
+        # Count non-empty entries
+        IMG_COUNT=0
+        for img in "${IMAGE_ARR[@]}"; do
+          [[ -n "${img// /}" ]] && ((IMG_COUNT++))
+        done
+        DIG_COUNT=0
+        for dig in "${DIGEST_ARR[@]}"; do
+          [[ -n "${dig// /}" ]] && ((DIG_COUNT++))
+        done
+
+        if [[ "$IMG_COUNT" -ne "$DIG_COUNT" ]]; then
+          echo "::error::Mismatch: got $IMG_COUNT image(s) but $DIG_COUNT digest(s)"
           exit 1
         fi
+
+        if [[ "$IMG_COUNT" -eq 0 ]]; then
+          echo "::error::No images provided"
+          exit 1
+        fi
+
+        for dig in "${DIGEST_ARR[@]}"; do
+          dig="${dig// /}"
+          [[ -z "$dig" ]] && continue
+          if [[ ! "$dig" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Invalid digest format: $dig. Expected format: sha256:<64 hex characters>"
+            exit 1
+          fi
+        done
+
+        echo "Validated $IMG_COUNT image/digest pair(s)"
 
     - name: Determine which steps are needed for idempotence
       id: check
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-        DIGEST: ${{ inputs.digest }}
-        IMAGE: ${{ inputs.image }}
+        IMAGES: ${{ inputs.image }}
+        DIGESTS: ${{ inputs.digest }}
       run: |
+        mapfile -t IMAGE_ARR <<< "$IMAGES"
+        mapfile -t DIGEST_ARR <<< "$DIGESTS"
+        IMAGE_ARR=("${IMAGE_ARR[@]//[$'\r']/}")
+        DIGEST_ARR=("${DIGEST_ARR[@]//[$'\r']/}")
+
         NEEDS_CONFIG_UPDATE=true
         NEEDS_TAG=true
 
-        # If tag exists with correct digest, nothing to do
+        if [ ! -f tinfoil-config.yml ]; then
+          echo "::error::tinfoil-config.yml not found"
+          exit 1
+        fi
+
         if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q .; then
           git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
-          if git show "${VERSION}:tinfoil-config.yml" 2>/dev/null | grep -q "image: \"${IMAGE}@${DIGEST}\""; then
-            echo "::notice::Tag ${VERSION} already exists with correct digest — nothing to do"
+          TAG_CONFIG=$(git show "${VERSION}:tinfoil-config.yml" 2>/dev/null || echo "")
+
+          ALL_MATCH=true
+          for i in "${!IMAGE_ARR[@]}"; do
+            img="${IMAGE_ARR[$i]// /}"
+            dig="${DIGEST_ARR[$i]// /}"
+            [[ -z "$img" ]] && continue
+            if ! echo "$TAG_CONFIG" | grep -q "image: \"${img}@${dig}\""; then
+              ALL_MATCH=false
+              break
+            fi
+          done
+
+          if [[ "$ALL_MATCH" == "true" ]]; then
+            echo "::notice::Tag ${VERSION} already exists with correct digest(s) — nothing to do"
             NEEDS_CONFIG_UPDATE=false
             NEEDS_TAG=false
           else
-            echo "::error::Tag ${VERSION} already exists but has a different digest"
+            echo "::error::Tag ${VERSION} already exists but has different digest(s)"
             exit 1
           fi
-        # If config already has the correct digest, PR was merged but tag wasn't pushed
-        elif [ -f tinfoil-config.yml ] && grep -q "image: \"${IMAGE}@${DIGEST}\"" tinfoil-config.yml; then
-          echo "::notice::tinfoil-config.yml already has correct digest — skipping to tag push"
-          NEEDS_CONFIG_UPDATE=false
-        elif [ ! -f tinfoil-config.yml ]; then
-          echo "::error::tinfoil-config.yml not found"
-          exit 1
+        else
+          # Check if config already has all correct digests (PR merged but tag not pushed)
+          ALL_IN_CONFIG=true
+          for i in "${!IMAGE_ARR[@]}"; do
+            img="${IMAGE_ARR[$i]// /}"
+            dig="${DIGEST_ARR[$i]// /}"
+            [[ -z "$img" ]] && continue
+            if ! grep -q "image: \"${img}@${dig}\"" tinfoil-config.yml; then
+              ALL_IN_CONFIG=false
+              break
+            fi
+          done
+
+          if [[ "$ALL_IN_CONFIG" == "true" ]]; then
+            echo "::notice::tinfoil-config.yml already has correct digest(s) — skipping to tag push"
+            NEEDS_CONFIG_UPDATE=false
+          fi
         fi
 
         echo "needs_config_update=$NEEDS_CONFIG_UPDATE" >> "$GITHUB_OUTPUT"
@@ -75,14 +142,25 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-        DIGEST: ${{ inputs.digest }}
-        IMAGE: ${{ inputs.image }}
+        IMAGES: ${{ inputs.image }}
+        DIGESTS: ${{ inputs.digest }}
       run: |
-        sed -i "s|image: \"${IMAGE}[:@].*\".*|image: \"${IMAGE}@${DIGEST}\" # ${VERSION}|" tinfoil-config.yml
+        mapfile -t IMAGE_ARR <<< "$IMAGES"
+        mapfile -t DIGEST_ARR <<< "$DIGESTS"
+        IMAGE_ARR=("${IMAGE_ARR[@]//[$'\r']/}")
+        DIGEST_ARR=("${DIGEST_ARR[@]//[$'\r']/}")
+
+        for i in "${!IMAGE_ARR[@]}"; do
+          img="${IMAGE_ARR[$i]// /}"
+          dig="${DIGEST_ARR[$i]// /}"
+          [[ -z "$img" ]] && continue
+          sed -i "s|image: \"${img}[:@].*\".*|image: \"${img}@${dig}\" # ${VERSION}|" tinfoil-config.yml
+        done
+
         if ! git diff --quiet tinfoil-config.yml; then
           echo "tinfoil-config.yml updated successfully"
         else
-          echo "::error::sed did not modify tinfoil-config.yml — image line may not match expected pattern for ${IMAGE}"
+          echo "::error::sed did not modify tinfoil-config.yml — image line(s) may not match expected pattern"
           exit 1
         fi
 
@@ -93,10 +171,10 @@ runs:
       with:
         base: ${{ inputs.base-branch }}
         branch: update-config/${{ inputs.version }}
-        commit-message: "chore: update container image to ${{ inputs.version }}"
-        title: "chore: update container image to ${{ inputs.version }}"
+        commit-message: "chore: update container image(s) to ${{ inputs.version }}"
+        title: "chore: update container image(s) to ${{ inputs.version }}"
         body: |
-          Updates `tinfoil-config.yml` to use the container image built from tag `${{ inputs.version }}` with digest `${{ inputs.digest }}`.
+          Updates `tinfoil-config.yml` to use the container image(s) built for `${{ inputs.version }}`.
 
     - name: Merge Pull Request
       if: steps.check.outputs.needs_config_update == 'true' && steps.create-pr.outputs.pull-request-number
