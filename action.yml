@@ -22,123 +22,28 @@ runs:
   using: "composite"
   steps:
     - name: Checkout base branch
-      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         ref: ${{ inputs.base-branch }}
+        # Required so the "Push version tag" step below can git push without
+        # re-authenticating.
+        persist-credentials: true # zizmor: ignore[artipacked]
 
-    - name: Validate inputs
+    - name: Plan and update config
+      id: plan
       shell: bash
       env:
         IMAGES: ${{ inputs.image }}
         DIGESTS: ${{ inputs.digest }}
-      run: |
-        mapfile -t IMAGE_ARR < <(printf '%s' "$IMAGES" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
-        mapfile -t DIGEST_ARR < <(printf '%s' "$DIGESTS" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
-
-        if [[ "${#IMAGE_ARR[@]}" -ne "${#DIGEST_ARR[@]}" ]]; then
-          echo "::error::Mismatch: got ${#IMAGE_ARR[@]} image(s) but ${#DIGEST_ARR[@]} digest(s)"
-          exit 1
-        fi
-
-        if [[ "${#IMAGE_ARR[@]}" -eq 0 ]]; then
-          echo "::error::No images provided"
-          exit 1
-        fi
-
-        for dig in "${DIGEST_ARR[@]}"; do
-          if [[ ! "$dig" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "::error::Invalid digest format: $dig. Expected format: sha256:<64 hex characters>"
-            exit 1
-          fi
-        done
-
-        echo "Validated ${#IMAGE_ARR[@]} image/digest pair(s)"
-
-    - name: Determine which steps are needed for idempotence
-      id: check
-      shell: bash
-      env:
         VERSION: ${{ inputs.version }}
-        IMAGES: ${{ inputs.image }}
-        DIGESTS: ${{ inputs.digest }}
-      run: |
-        mapfile -t IMAGE_ARR < <(printf '%s' "$IMAGES" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
-        mapfile -t DIGEST_ARR < <(printf '%s' "$DIGESTS" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
-
-        NEEDS_CONFIG_UPDATE=true
-        NEEDS_TAG=true
-
-        if [ ! -f tinfoil-config.yml ]; then
-          echo "::error::tinfoil-config.yml not found"
-          exit 1
-        fi
-
-        if git ls-remote --tags origin "refs/tags/${VERSION}" | grep -q .; then
-          git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
-          TAG_CONFIG=$(git show "${VERSION}:tinfoil-config.yml" 2>/dev/null || echo "")
-
-          ALL_MATCH=true
-          for i in "${!IMAGE_ARR[@]}"; do
-            if ! echo "$TAG_CONFIG" | grep -q "image: \"${IMAGE_ARR[$i]}@${DIGEST_ARR[$i]}\""; then
-              ALL_MATCH=false
-              break
-            fi
-          done
-
-          if [[ "$ALL_MATCH" == "true" ]]; then
-            echo "::notice::Tag ${VERSION} already exists with correct digest(s) — nothing to do"
-            NEEDS_CONFIG_UPDATE=false
-            NEEDS_TAG=false
-          else
-            echo "::error::Tag ${VERSION} already exists but has different digest(s)"
-            exit 1
-          fi
-        else
-          # Check if config already has all correct digests (PR merged but tag not pushed)
-          ALL_IN_CONFIG=true
-          for i in "${!IMAGE_ARR[@]}"; do
-            if ! grep -q "image: \"${IMAGE_ARR[$i]}@${DIGEST_ARR[$i]}\"" tinfoil-config.yml; then
-              ALL_IN_CONFIG=false
-              break
-            fi
-          done
-
-          if [[ "$ALL_IN_CONFIG" == "true" ]]; then
-            echo "::notice::tinfoil-config.yml already has correct digest(s) — skipping to tag push"
-            NEEDS_CONFIG_UPDATE=false
-          fi
-        fi
-
-        echo "needs_config_update=$NEEDS_CONFIG_UPDATE" >> "$GITHUB_OUTPUT"
-        echo "needs_tag=$NEEDS_TAG" >> "$GITHUB_OUTPUT"
-
-    - name: Update tinfoil-config.yml
-      if: steps.check.outputs.needs_config_update == 'true'
-      shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-        IMAGES: ${{ inputs.image }}
-        DIGESTS: ${{ inputs.digest }}
-      run: |
-        mapfile -t IMAGE_ARR < <(printf '%s' "$IMAGES" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
-        mapfile -t DIGEST_ARR < <(printf '%s' "$DIGESTS" | tr -d '\r' | sed '/^[[:space:]]*$/d;s/^[[:space:]]*//;s/[[:space:]]*$//')
-
-        for i in "${!IMAGE_ARR[@]}"; do
-          sed -i "s|image: \"${IMAGE_ARR[$i]}[:@].*\".*|image: \"${IMAGE_ARR[$i]}@${DIGEST_ARR[$i]}\" # ${VERSION}|" tinfoil-config.yml
-        done
-
-        if ! git diff --quiet tinfoil-config.yml; then
-          echo "tinfoil-config.yml updated successfully"
-        else
-          echo "::error::sed did not modify tinfoil-config.yml — image line(s) may not match expected pattern"
-          exit 1
-        fi
+      run: python3 "${{ github.action_path }}/update_config.py"
 
     - name: Create Pull Request
       id: create-pr
-      if: steps.check.outputs.needs_config_update == 'true'
+      if: steps.plan.outputs.needs_config_update == 'true'
       uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # 7.0.11
       with:
+        token: ${{ inputs.github-token }}
         base: ${{ inputs.base-branch }}
         branch: update-config/${{ inputs.version }}
         commit-message: "chore: update container image(s) to ${{ inputs.version }}"
@@ -147,7 +52,7 @@ runs:
           Updates `tinfoil-config.yml` to use the container image(s) built for `${{ inputs.version }}`.
 
     - name: Merge Pull Request
-      if: steps.check.outputs.needs_config_update == 'true' && steps.create-pr.outputs.pull-request-number
+      if: steps.plan.outputs.needs_config_update == 'true' && steps.create-pr.outputs.pull-request-number
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -155,7 +60,7 @@ runs:
       run: gh pr merge "$PR_NUMBER" --rebase --admin --delete-branch
 
     - name: Push version tag
-      if: steps.check.outputs.needs_tag == 'true'
+      if: steps.plan.outputs.needs_tag == 'true'
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
