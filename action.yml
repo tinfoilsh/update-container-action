@@ -41,15 +41,33 @@ runs:
     - name: Create Pull Request
       id: create-pr
       if: steps.plan.outputs.needs_config_update == 'true'
-      uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # 7.0.11
-      with:
-        token: ${{ inputs.github-token }}
-        base: ${{ inputs.base-branch }}
-        branch: update-config/${{ inputs.version }}
-        commit-message: "chore: update container image(s) to ${{ inputs.version }}"
-        title: "chore: update container image(s) to ${{ inputs.version }}"
-        body: |
-          Updates `tinfoil-config.yml` to use the container image(s) built for `${{ inputs.version }}`.
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        VERSION: ${{ inputs.version }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+      run: |
+        BRANCH="update-config/${VERSION}"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -B "$BRANCH"
+        git add tinfoil-config.yml
+        git commit -m "chore: update container image(s) to ${VERSION}"
+        git push --force-with-lease origin "$BRANCH"
+
+        # Reuse an existing open PR for this branch if a previous run created
+        # one but didn't merge (e.g. transient failure). Otherwise create new.
+        PR_NUMBER=$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" \
+          --state open --json number --jq '.[0].number // empty')
+        if [ -z "$PR_NUMBER" ]; then
+          PR_URL=$(gh pr create \
+            --base "$BASE_BRANCH" \
+            --head "$BRANCH" \
+            --title "chore: update container image(s) to ${VERSION}" \
+            --body "Updates \`tinfoil-config.yml\` to use the container image(s) built for \`${VERSION}\`.")
+          PR_NUMBER="${PR_URL##*/}"
+        fi
+        echo "pull-request-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
     - name: Merge Pull Request
       if: steps.plan.outputs.needs_config_update == 'true' && steps.create-pr.outputs.pull-request-number
