@@ -2,11 +2,8 @@ name: "Tinfoil Container Release"
 description: "Updates tinfoil-config, creates release tag. Supports single or multiple container images."
 
 inputs:
-  image:
-    description: "Repository name(s) of the image(s) to update (without the tag or hash). For multiple images, use newline-separated values."
-    required: true
-  digest:
-    description: "Container image digest(s) from the container build. For multiple images, use newline-separated values (must match image order)."
+  image-refs:
+    description: "Container image references in `<repo>@sha256:<digest>` format, one per line. For multiple images, use newline-separated values."
     required: true
   version:
     description: "Version tag (e.g., v0.0.6)"
@@ -33,8 +30,7 @@ runs:
       id: plan
       shell: bash
       env:
-        IMAGES: ${{ inputs.image }}
-        DIGESTS: ${{ inputs.digest }}
+        IMAGE_REFS: ${{ inputs.image-refs }}
         VERSION: ${{ inputs.version }}
       run: python3 "${{ github.action_path }}/update_config.py"
 

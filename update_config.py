@@ -1,6 +1,6 @@
 """Plan and apply tinfoil-config.yml updates for the container release action.
 
-Reads IMAGES, DIGESTS, VERSION from the environment, mutates tinfoil-config.yml
+Reads IMAGE_REFS, VERSION from the environment, mutates tinfoil-config.yml
 when needed, and emits needs_config_update / needs_tag to $GITHUB_OUTPUT.
 
 Pure functions live above main() and are unit-tested in tests/.
@@ -36,23 +36,24 @@ def parse_list(raw: str) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
-def parse_pairs(images_raw: str, digests_raw: str) -> list[Pair]:
-    images = parse_list(images_raw)
-    digests = parse_list(digests_raw)
-    if not images:
-        raise ActionError("No images provided")
-    if not digests:
-        raise ActionError("No digests provided")
-    if len(images) != len(digests):
-        raise ActionError(
-            f"Mismatch: got {len(images)} image(s) but {len(digests)} digest(s)"
-        )
-    for d in digests:
-        if not DIGEST_RE.match(d):
+def parse_refs(refs_raw: str) -> list[Pair]:
+    refs = parse_list(refs_raw)
+    if not refs:
+        raise ActionError("No image references provided")
+    pairs = []
+    for ref in refs:
+        if "@" not in ref:
+            raise ActionError(f"Invalid image reference (missing '@'): {ref}")
+        image, digest = ref.split("@", 1)
+        if not image:
+            raise ActionError(f"Invalid image reference (empty image): {ref}")
+        if not DIGEST_RE.match(digest):
             raise ActionError(
-                f"Invalid digest format: {d}. Expected sha256:<64 hex characters>"
+                f"Invalid digest format in {ref}: {digest}. "
+                f"Expected sha256:<64 hex characters>"
             )
-    return [Pair(i, d) for i, d in zip(images, digests)]
+        pairs.append(Pair(image, digest))
+    return pairs
 
 
 def already_pinned(config: str, pairs: list[Pair]) -> bool:
@@ -123,7 +124,7 @@ def set_output(name: str, value: str) -> None:
 
 def main() -> None:
     try:
-        pairs = parse_pairs(env("IMAGES"), env("DIGESTS"))
+        pairs = parse_refs(env("IMAGE_REFS"))
         version = env("VERSION").strip()
 
         if not CONFIG_FILE.exists():
