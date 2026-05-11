@@ -7,7 +7,7 @@ from update_config import (
     already_pinned,
     apply_updates,
     parse_list,
-    parse_pairs,
+    parse_refs,
     update_image_line,
 )
 
@@ -23,29 +23,33 @@ class ParseListTests(unittest.TestCase):
         self.assertEqual(parse_list("a\r\nb\r\n"), ["a", "b"])
 
 
-class ParsePairsTests(unittest.TestCase):
-    def test_count_mismatch(self):
-        with self.assertRaisesRegex(ActionError, "Mismatch"):
-            parse_pairs("a\nb", D1)
-
+class ParseRefsTests(unittest.TestCase):
     def test_empty_input(self):
-        with self.assertRaisesRegex(ActionError, "No images"):
-            parse_pairs("", "")
+        with self.assertRaisesRegex(ActionError, "No image references"):
+            parse_refs("")
+
+    def test_missing_at_sign(self):
+        with self.assertRaisesRegex(ActionError, "missing '@'"):
+            parse_refs("ghcr.io/foo")
+
+    def test_empty_image_part(self):
+        with self.assertRaisesRegex(ActionError, "empty image"):
+            parse_refs(f"@{D1}")
 
     def test_invalid_digest(self):
         with self.assertRaisesRegex(ActionError, "Invalid digest"):
-            parse_pairs("img", "not-a-digest")
+            parse_refs("img@not-a-digest")
 
     def test_rejects_short_digest(self):
         with self.assertRaisesRegex(ActionError, "Invalid digest"):
-            parse_pairs("img", "sha256:abc")
+            parse_refs("img@sha256:abc")
 
     def test_ok_single(self):
-        self.assertEqual(parse_pairs("img", D1), [Pair("img", D1)])
+        self.assertEqual(parse_refs(f"img@{D1}"), [Pair("img", D1)])
 
     def test_ok_multiple(self):
         self.assertEqual(
-            parse_pairs("a\nb\n", f"{D1}\n{D2}\n"),
+            parse_refs(f"a@{D1}\nb@{D2}\n"),
             [Pair("a", D1), Pair("b", D2)],
         )
 

@@ -26,12 +26,23 @@ config-update-and-tag:
     - name: Update tinfoil-config.yml and create tag
       uses: tinfoilsh/update-container-action@329555b64fe9685196b91e6598ca06b4647b8821 # v0.3.0
       with:
-        image: "ghcr.io/tinfoilsh/my-container"
+        image-refs: "ghcr.io/tinfoilsh/my-container@${{ needs.container-build.outputs.digest }}"
         version: ${{ inputs.version }}
-        digest: ${{ needs.container-build.outputs.digest }}
         github-token: ${{ secrets.GITHUB_TOKEN }}
         base-branch: ${{ github.ref_name }}
     - ...
+```
+
+For multiple images, pass a newline-separated list of references:
+
+```yaml
+      with:
+        image-refs: |
+          ghcr.io/tinfoilsh/c1@${{ needs.build1.outputs.digest }}
+          ghcr.io/tinfoilsh/c2@${{ needs.build2.outputs.digest }}
+        version: ${{ inputs.version }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        base-branch: ${{ github.ref_name }}
 ```
 
 ## Prerequisites
