@@ -1,130 +1,95 @@
-name: "Tinfoil Container Release"
-description: "Optionally updates tinfoil-config.yml and creates a release tag. Supports single or multiple container images."
+name: "Prepare Tinfoil Container Release"
+description: "Prepares a Tinfoil Containers repository for measurement and release. Optionally updates image digests and creates a release tag."
 
 inputs:
+  version:
+    description: "Version tag to create (e.g., v0.0.6)"
+    required: true
+  source-sha:
+    description: "Commit SHA that the container image(s) were built from (pass `github.sha`)."
+    required: true
+  github-token:
+    description: "GitHub token used to push the version tag. Use a PAT or GitHub App token if the tag push must trigger downstream workflows — the default GITHUB_TOKEN does not."
+    required: true
   image-refs:
     description: "Container image references in `<repo>@sha256:<digest>` format, one per line. For multiple images, use newline-separated values. Required when update-config is true."
     required: false
-  version:
-    description: "Version tag (e.g., v0.0.6)"
-    required: true
-  github-token:
-    description: "GitHub token for authentication"
-    required: true
-  base-branch:
-    description: "Branch to target for the PR and version tag"
-    required: true
   update-config:
-    description: "Update tinfoil-config.yml with the provided image digests via a merged PR."
+    description: "Substitute the provided image digests into tinfoil-config.yml in the tagged commit. Leave false for repos with no tinfoil-config.yml."
     required: false
     default: "false"
-  create-tag:
-    description: "Create and push the version tag."
-    required: false
-    default: "true"
 
 runs:
   using: "composite"
   steps:
-    - name: Warn if nothing to do
-      if: inputs.update-config != 'true' && inputs.create-tag != 'true'
-      shell: bash
-      run: echo "::warning::Both update-config and create-tag are false — this action has nothing to do."
-
-    - name: Checkout base branch
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        ref: ${{ inputs.base-branch }}
-        # Required so the PR and tag steps below can git push without
-        # re-authenticating.
-        persist-credentials: true # zizmor: ignore[artipacked]
-
-    # --- Step 1: update tinfoil-config.yml (opt-in) ---------------------------
-    # update_config.py rewrites image lines idempotently; `git diff` is the
-    # source of truth for whether a PR is actually needed.
-    - name: Update tinfoil-config.yml
-      id: config
-      if: inputs.update-config == 'true'
+    - name: Validate inputs
       shell: bash
       env:
-        IMAGE_REFS: ${{ inputs.image-refs }}
-        VERSION: ${{ inputs.version }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
       run: |
-        python3 "${{ github.action_path }}/update_config.py"
-        if git diff --quiet -- tinfoil-config.yml; then
-          echo "::notice::tinfoil-config.yml already has the requested digest(s) — no PR needed."
-          echo "config_changed=false" >> "$GITHUB_OUTPUT"
-        else
-          echo "config_changed=true" >> "$GITHUB_OUTPUT"
+        if [ -z "$SOURCE_SHA" ]; then
+          echo "::error::source-sha is required. Pass \${{ github.sha }} from the build workflow."
+          exit 1
         fi
-
-    # Interaction guard: the one place that couples the two steps. Runs before
-    # anything is committed so a version-reuse mistake fails fast and leaves the
-    # repo untouched.
-    - name: Guard against version reuse
-      if: inputs.update-config == 'true' && inputs.create-tag == 'true' && steps.config.outputs.config_changed == 'true'
-      shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-      run: |
-        if git ls-remote --tags --exit-code origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
-          echo "::error::Tag ${VERSION} already exists but tinfoil-config.yml needs updating. Bump the version and rerun."
+        if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::source-sha must be a full 40-character commit SHA (got: ${SOURCE_SHA})."
           exit 1
         fi
 
-    - name: Create Pull Request
-      id: create-pr
-      if: inputs.update-config == 'true' && steps.config.outputs.config_changed == 'true'
+    - name: Checkout source commit
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: ${{ inputs.source-sha }}
+        token: ${{ inputs.github-token }}
+        # Required so the tag push below can authenticate without a re-checkout.
+        persist-credentials: true # zizmor: ignore[artipacked]
+
+    - name: Update tinfoil-config.yml
+      id: update-config
+      if: inputs.update-config == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
         VERSION: ${{ inputs.version }}
-        BASE_BRANCH: ${{ inputs.base-branch }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        IMAGE_REFS: ${{ inputs.image-refs }}
       run: |
-        BRANCH="update-config/${VERSION}"
-        git config user.name "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git checkout -B "$BRANCH"
-        git add tinfoil-config.yml
-        git commit -m "chore: update container image(s) to ${VERSION}"
-        git push --force-with-lease origin "$BRANCH"
+        # Substitute the image digest(s) into tinfoil-config.yml. If anything
+        # changed, commit it as a single child of SOURCE_SHA
 
-        # Reuse an existing open PR for this branch if a previous run created
-        # one but didn't merge (e.g. transient failure). Otherwise create new.
-        PR_NUMBER=$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" \
-          --state open --json number --jq '.[0].number // empty')
-        if [ -z "$PR_NUMBER" ]; then
-          PR_URL=$(gh pr create \
-            --base "$BASE_BRANCH" \
-            --head "$BRANCH" \
-            --title "chore: update container image(s) to ${VERSION}" \
-            --body "Updates \`tinfoil-config.yml\` to use the container image(s) built for \`${VERSION}\`.")
-          PR_NUMBER="${PR_URL##*/}"
+        RELEASE_COMMIT="$SOURCE_SHA"
+
+        python3 "${{ github.action_path }}/update_config.py"
+        if git diff --quiet -- tinfoil-config.yml; then
+          echo "::notice::tinfoil-config.yml already has the requested digest(s) -- no updates made"
+        else
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Pin the commit dates to the source commit so the release commit
+          # SHA is deterministic — a re-run produces an identical commit.
+          SOURCE_DATE="$(git show -s --format=%cI "$SOURCE_SHA")"
+          export GIT_AUTHOR_DATE="$SOURCE_DATE"
+          export GIT_COMMITTER_DATE="$SOURCE_DATE"
+          git add tinfoil-config.yml
+          git commit -m "chore: pin container image(s) for ${VERSION}"
+          RELEASE_COMMIT="$(git rev-parse HEAD)"
         fi
-        echo "pull-request-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
-    # Rebase merge: the base branch tip becomes exactly the config commit, so
-    # the tag step below can tag origin/<base-branch> without a merge commit.
-    - name: Merge Pull Request
-      if: inputs.update-config == 'true' && steps.config.outputs.config_changed == 'true' && steps.create-pr.outputs.pull-request-number
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github-token }}
-        PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
-      run: gh pr merge "$PR_NUMBER" --rebase --admin --delete-branch
+        echo "release-commit=${RELEASE_COMMIT}" >> "$GITHUB_OUTPUT"
 
-    # --- Step 2: create the version tag (opt-in) -----------------------------
     - name: Create version tag
-      if: inputs.create-tag == 'true'
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-        BASE_BRANCH: ${{ inputs.base-branch }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        RELEASE_COMMIT: ${{ steps.update-config.outputs.release-commit }}
       run: |
         if git ls-remote --tags --exit-code origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
           echo "::notice::Tag ${VERSION} already exists — skipping tag creation."
           exit 0
         fi
-        git fetch origin "$BASE_BRANCH"
-        git tag "$VERSION" "origin/${BASE_BRANCH}"
+
+        # Tag the release commit from the update-config step, or SOURCE_SHA
+        # directly when update-config was skipped.
+        TAG_TARGET="${RELEASE_COMMIT:-$SOURCE_SHA}"
+        git tag "$VERSION" "$TAG_TARGET"
         git push origin "$VERSION"
