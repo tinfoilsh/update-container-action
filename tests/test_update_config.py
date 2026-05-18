@@ -4,7 +4,6 @@ from textwrap import dedent
 from update_config import (
     Pair,
     ActionError,
-    already_pinned,
     apply_updates,
     parse_list,
     parse_refs,
@@ -73,6 +72,13 @@ class UpdateImageLineTests(unittest.TestCase):
     def test_no_match_raises(self):
         with self.assertRaisesRegex(ActionError, "Could not find"):
             update_image_line("nothing here\n", Pair("ghcr.io/x/y", D1), "v1")
+
+    def test_idempotent_when_already_pinned(self):
+        # Re-applying the digest/version already in the file is a no-op. The
+        # action relies on this: `git diff` then reports no change, no PR.
+        config = f'image: "ghcr.io/x/y@{D1}" # v1.0.0\n'
+        out = update_image_line(config, Pair("ghcr.io/x/y", D1), "v1.0.0")
+        self.assertEqual(out, config)
 
     def test_does_not_match_other_image_with_shared_prefix(self):
         config = (
@@ -149,18 +155,10 @@ class ApplyUpdatesTests(unittest.TestCase):
         self.assertEqual(apply_updates(before, pairs, "v0.1.0"), expected)
 
 
-class AlreadyPinnedTests(unittest.TestCase):
-    def test_true_when_all_present(self):
-        config = f'image: "a@{D1}"\nimage: "b@{D2}"\n'
-        self.assertTrue(already_pinned(config, [Pair("a", D1), Pair("b", D2)]))
-
-    def test_false_when_one_missing(self):
-        config = f'image: "a@{D1}"\n'
-        self.assertFalse(already_pinned(config, [Pair("a", D1), Pair("b", D2)]))
-
-    def test_false_when_digest_differs(self):
-        config = f'image: "a@{D1}"\n'
-        self.assertFalse(already_pinned(config, [Pair("a", D2)]))
+    def test_idempotent_when_already_pinned(self):
+        config = f'image: "x@{D1}" # v1\nimage: "y@{D2}" # v1\n'
+        out = apply_updates(config, [Pair("x", D1), Pair("y", D2)], "v1")
+        self.assertEqual(out, config)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 name: "Tinfoil Container Release"
-description: "Updates tinfoil-config, creates release tag. Supports single or multiple container images."
+description: "Optionally updates tinfoil-config.yml and creates a release tag. Supports single or multiple container images."
 
 inputs:
   image-refs:
-    description: "Container image references in `<repo>@sha256:<digest>` format, one per line. For multiple images, use newline-separated values."
-    required: true
+    description: "Container image references in `<repo>@sha256:<digest>` format, one per line. For multiple images, use newline-separated values. Required when update-config is true."
+    required: false
   version:
     description: "Version tag (e.g., v0.0.6)"
     required: true
@@ -14,29 +14,67 @@ inputs:
   base-branch:
     description: "Branch to target for the PR and version tag"
     required: true
+  update-config:
+    description: "Update tinfoil-config.yml with the provided image digests via a merged PR."
+    required: false
+    default: "false"
+  create-tag:
+    description: "Create and push the version tag."
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
   steps:
+    - name: Warn if nothing to do
+      if: inputs.update-config != 'true' && inputs.create-tag != 'true'
+      shell: bash
+      run: echo "::warning::Both update-config and create-tag are false — this action has nothing to do."
+
     - name: Checkout base branch
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         ref: ${{ inputs.base-branch }}
-        # Required so the "Push version tag" step below can git push without
+        # Required so the PR and tag steps below can git push without
         # re-authenticating.
         persist-credentials: true # zizmor: ignore[artipacked]
 
-    - name: Plan and update config
-      id: plan
+    # --- Step 1: update tinfoil-config.yml (opt-in) ---------------------------
+    # update_config.py rewrites image lines idempotently; `git diff` is the
+    # source of truth for whether a PR is actually needed.
+    - name: Update tinfoil-config.yml
+      id: config
+      if: inputs.update-config == 'true'
       shell: bash
       env:
         IMAGE_REFS: ${{ inputs.image-refs }}
         VERSION: ${{ inputs.version }}
-      run: python3 "${{ github.action_path }}/update_config.py"
+      run: |
+        python3 "${{ github.action_path }}/update_config.py"
+        if git diff --quiet -- tinfoil-config.yml; then
+          echo "::notice::tinfoil-config.yml already has the requested digest(s) — no PR needed."
+          echo "config_changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "config_changed=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Interaction guard: the one place that couples the two steps. Runs before
+    # anything is committed so a version-reuse mistake fails fast and leaves the
+    # repo untouched.
+    - name: Guard against version reuse
+      if: inputs.update-config == 'true' && inputs.create-tag == 'true' && steps.config.outputs.config_changed == 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        if git ls-remote --tags --exit-code origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+          echo "::error::Tag ${VERSION} already exists but tinfoil-config.yml needs updating. Bump the version and rerun."
+          exit 1
+        fi
 
     - name: Create Pull Request
       id: create-pr
-      if: steps.plan.outputs.needs_config_update == 'true'
+      if: inputs.update-config == 'true' && steps.config.outputs.config_changed == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -65,21 +103,28 @@ runs:
         fi
         echo "pull-request-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
+    # Rebase merge: the base branch tip becomes exactly the config commit, so
+    # the tag step below can tag origin/<base-branch> without a merge commit.
     - name: Merge Pull Request
-      if: steps.plan.outputs.needs_config_update == 'true' && steps.create-pr.outputs.pull-request-number
+      if: inputs.update-config == 'true' && steps.config.outputs.config_changed == 'true' && steps.create-pr.outputs.pull-request-number
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
       run: gh pr merge "$PR_NUMBER" --rebase --admin --delete-branch
 
-    - name: Push version tag
-      if: steps.plan.outputs.needs_tag == 'true'
+    # --- Step 2: create the version tag (opt-in) -----------------------------
+    - name: Create version tag
+      if: inputs.create-tag == 'true'
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
         BASE_BRANCH: ${{ inputs.base-branch }}
       run: |
+        if git ls-remote --tags --exit-code origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+          echo "::notice::Tag ${VERSION} already exists — skipping tag creation."
+          exit 0
+        fi
         git fetch origin "$BASE_BRANCH"
-        git tag "$VERSION" "origin/$BASE_BRANCH"
+        git tag "$VERSION" "origin/${BASE_BRANCH}"
         git push origin "$VERSION"
